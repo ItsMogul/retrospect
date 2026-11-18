@@ -41,7 +41,7 @@ class RetrospectPanel extends PluginPanel
 	{
 		void clipNow();
 
-		void openRoot();
+		void copyRoot();
 
 		void toggleMode();
 
@@ -55,7 +55,7 @@ class RetrospectPanel extends PluginPanel
 
 		void foldersChanged();
 
-		void openFolder(FightFolders.Folder folder);
+		void copyFolderPath(FightFolders.Folder folder);
 
 		void createFolder(String name, String targets);
 	}
@@ -179,7 +179,7 @@ class RetrospectPanel extends PluginPanel
 		column.add(gap(6));
 
 		column.add(row(button("Clip that", "Save the last few seconds as a clip", actions::clipNow),
-			button("Open folder", "Clips, screenshots and folders", actions::openRoot)));
+			button("Copy path", "Copies the path to your clips, screenshots and folders", actions::copyRoot)));
 		column.add(gap(4));
 		column.add(row(button("Mode: " + (serious ? "Serious" : "Everyday"),
 			serious ? "Serious: every fight's debrief and clips are filed into its folder. Click for Everyday."
@@ -348,7 +348,7 @@ class RetrospectPanel extends PluginPanel
 			c.add(check("Clip every kill", "Also save a clip of each kill", f.clipKills, v -> f.clipKills = v));
 			c.add(check("Clip every death", "Also save a clip of each death", f.clipDeaths, v -> f.clipDeaths = v));
 			c.add(gap(4));
-			JButton open = button("Open", "Open this folder", () -> actions.openFolder(f));
+			JButton open = button("Copy path", "Copies the path to this folder", () -> actions.copyFolderPath(f));
 			if (f.custom)
 			{
 				JButton names = button("Edit names", "Choose which bosses are filed here", () ->
