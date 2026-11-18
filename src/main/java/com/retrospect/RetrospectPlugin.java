@@ -11,6 +11,8 @@ import net.runelite.client.game.ItemStats;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
 import java.awt.Color;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -63,7 +65,6 @@ import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.HotkeyListener;
 import net.runelite.client.util.ImageUtil;
-import net.runelite.client.util.LinkBrowser;
 import net.runelite.client.util.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -211,9 +212,10 @@ public class RetrospectPlugin extends Plugin
 		}
 
 		@Override
-		public void openRoot()
+		public void copyRoot()
 		{
-			RetrospectPlugin.openFolder(Recorder.ROOT);
+			final String path = RetrospectPlugin.copyPath(Recorder.ROOT);
+			clientThread.invokeLater(() -> say("Path copied: " + path));
 		}
 
 		@Override
@@ -265,9 +267,10 @@ public class RetrospectPlugin extends Plugin
 		}
 
 		@Override
-		public void openFolder(FightFolders.Folder folder)
+		public void copyFolderPath(FightFolders.Folder folder)
 		{
-			RetrospectPlugin.openFolder(new File(Recorder.FOLDERS, folder.dir));
+			final String path = RetrospectPlugin.copyPath(new File(Recorder.FOLDERS, folder.dir));
+			clientThread.invokeLater(() -> say("Path copied: " + path));
 		}
 
 		@Override
@@ -964,9 +967,22 @@ public class RetrospectPlugin extends Plugin
 		});
 	}
 
-	private static void openFolder(File dir)
+	/**
+	 * Puts a folder's path on the clipboard. Plugins are not allowed to open a file manager,
+	 * so the path is handed to the player to paste instead.
+	 */
+	private static String copyPath(File dir)
 	{
 		dir.mkdirs();
-		LinkBrowser.open(dir.getAbsolutePath());
+		final String path = dir.getAbsolutePath();
+		try
+		{
+			Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(path), null);
+		}
+		catch (RuntimeException e)
+		{
+			log.warn("Could not copy the folder path", e);
+		}
+		return path;
 	}
 }
