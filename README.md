@@ -74,7 +74,9 @@ Each can be set to Off, Screenshot, Clip, or both.
 - It only captures while you are logged in.
 - The last few seconds are held **in memory only** and constantly overwritten. Nothing is
   written to disk until a moment happens or you press "Clip that".
-- Nothing is uploaded anywhere. Everything stays in `.runelite/retrospect/` on your PC.
+- Nothing is uploaded anywhere. Everything stays in `.runelite/plugin-data/retrospect/` on
+  your PC, the directory RuneLite gives the plugin. It cannot write anywhere else. If you
+  ran an earlier build, your old `.runelite/retrospect/` folder is moved there on first start.
 - Clips are AVI (Motion JPEG) files with no sound. They play in VLC and most desktop
   players. Discord will not preview them inline.
 
