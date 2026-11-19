@@ -2,24 +2,23 @@ package com.retrospect;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import java.io.Reader;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import net.runelite.client.util.Filepath;
 
 /** Past fights, kept in one small file so they survive restarts. */
 final class FightHistory
 {
 	static final int MAX_ENTRIES = 1000;
 
-	private final File file;
+	private final Filepath file;
 	private final Gson gson;
 	private List<FightSummary> entries = new ArrayList<>();
 
-	FightHistory(File file, Gson gson)
+	FightHistory(Filepath file, Gson gson)
 	{
 		this.file = file;
 		this.gson = gson;
@@ -34,10 +33,13 @@ final class FightHistory
 		}
 		try
 		{
-			String json = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-			List<FightSummary> read = gson.fromJson(json, new TypeToken<List<FightSummary>>()
+			List<FightSummary> read;
+			try (Reader r = file.openBufferedReader())
 			{
-			}.getType());
+				read = gson.fromJson(r, new TypeToken<List<FightSummary>>()
+				{
+				}.getType());
+			}
 			if (read != null)
 			{
 				for (FightSummary s : read)
@@ -52,10 +54,10 @@ final class FightHistory
 		catch (IOException | RuntimeException e)
 		{
 			// A damaged history file should never stop the plugin; start fresh and keep the old one aside
-			File aside = new File(file.getParentFile(), file.getName() + ".unreadable");
+			Filepath aside = file.getParent().join(file.getFileName() + ".unreadable");
 			try
 			{
-				Files.copy(file.toPath(), aside.toPath(), StandardCopyOption.REPLACE_EXISTING);
+				file.copyTo(aside, StandardCopyOption.REPLACE_EXISTING);
 			}
 			catch (IOException ignored)
 			{
@@ -71,10 +73,10 @@ final class FightHistory
 		{
 			entries.remove(0);
 		}
-		file.getParentFile().mkdirs();
-		File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
-		Files.write(tmp.toPath(), gson.toJson(entries).getBytes(StandardCharsets.UTF_8));
-		Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+		file.getParent().createDirectories();
+		Filepath tmp = file.getParent().join(file.getFileName() + ".tmp");
+		tmp.write(gson.toJson(entries));
+		tmp.moveTo(file, StandardCopyOption.REPLACE_EXISTING);
 	}
 
 	/** Earlier fights against the same target, oldest first. */

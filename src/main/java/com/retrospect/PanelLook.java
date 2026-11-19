@@ -2,12 +2,11 @@ package com.retrospect;
 
 import com.google.gson.Gson;
 import java.awt.Color;
-import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import java.io.Reader;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import net.runelite.client.util.Filepath;
 
 /** The player's own wording and colours for the panel, with the stock look to fall back on. */
 final class PanelLook
@@ -119,14 +118,17 @@ final class PanelLook
 	}
 
 	/** A missing or damaged file just means the stock look. */
-	static PanelLook load(File file, Gson gson)
+	static PanelLook load(Filepath file, Gson gson)
 	{
 		PanelLook look = null;
 		try
 		{
 			if (file.isFile())
 			{
-				look = gson.fromJson(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8), PanelLook.class);
+				try (Reader r = file.openBufferedReader())
+				{
+					look = gson.fromJson(r, PanelLook.class);
+				}
 			}
 		}
 		catch (IOException | RuntimeException e)
@@ -148,9 +150,9 @@ final class PanelLook
 		return look;
 	}
 
-	void save(File file, Gson gson) throws IOException
+	void save(Filepath file, Gson gson) throws IOException
 	{
-		file.getParentFile().mkdirs();
-		Files.write(file.toPath(), gson.toJson(this).getBytes(StandardCharsets.UTF_8));
+		file.getParent().createDirectories();
+		file.write(gson.toJson(this));
 	}
 }

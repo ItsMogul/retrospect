@@ -14,10 +14,7 @@ import java.awt.Color;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -63,6 +60,7 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.Filepath;
 import net.runelite.client.util.HotkeyListener;
 import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.Text;
@@ -71,6 +69,8 @@ import org.slf4j.LoggerFactory;
 
 @PluginDescriptor(
 	name = "Retrospect",
+	internalName = "retrospect",
+	legacyDataDirectory = "retrospect",
 	description = "Reviews every fight, win or lose: the one thing to fix, one thing to try, what you did well, and a short clip of the moment.",
 	tags = {"review", "debrief", "fight", "recap", "pvm", "pvp", "pk", "boss", "death", "kill", "clip", "replay", "record", "video", "screenshot"}
 )
@@ -83,7 +83,6 @@ public class RetrospectPlugin extends Plugin
 	private static final int ANIM_EAT_DRINK = 829;
 	private static final int UNARMED_TICKS = 4;
 	private static final int RAPID_STYLE = 1;
-	private static final File LOOK_FILE = new File(Recorder.ROOT, "look.json");
 	private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").withZone(ZoneId.systemDefault());
 
 	private static final Pattern VALUABLE_DROP = Pattern.compile("Valuable drop: (.+?) \\(((?:\\d+,?)+) coins\\)");
@@ -147,19 +146,26 @@ public class RetrospectPlugin extends Plugin
 		return cm.getConfig(RetrospectConfig.class);
 	}
 
+	/** The plugin's own directory, handed to us by RuneLite. Nothing is written outside it. */
+	private Filepath dataDir;
+	private Filepath lookFile;
+
 	@Override
-	protected void startUp()
+	protected void startUp() throws IOException
 	{
-		history = new FightHistory(new File(Recorder.ROOT, "history.json"), gson);
+		dataDir = getPluginDirectory();
+		lookFile = dataDir.join("look.json");
+		recorder.setRoot(dataDir);
+		history = new FightHistory(dataDir.join("history.json"), gson);
 		executor.execute(() ->
 		{
 			history.load();
 			refreshRecent();
 		});
 
-		folders = new FightFolders(new File(Recorder.ROOT, "folders.json"), gson);
+		folders = new FightFolders(dataDir.join("folders.json"), gson);
 		folders.load();
-		look = PanelLook.load(LOOK_FILE, gson);
+		look = PanelLook.load(lookFile, gson);
 		panel = new RetrospectPanel(new PanelActions(), look);
 		panel.setFolders(folders.all());
 		panel.setSerious(serious());
@@ -214,7 +220,7 @@ public class RetrospectPlugin extends Plugin
 		@Override
 		public void copyRoot()
 		{
-			final String path = RetrospectPlugin.copyPath(Recorder.ROOT);
+			final String path = copyPath(dataDir);
 			clientThread.invokeLater(() -> say("Path copied: " + path));
 		}
 
@@ -251,7 +257,7 @@ public class RetrospectPlugin extends Plugin
 			{
 				try
 				{
-					l.save(LOOK_FILE, gson);
+					l.save(lookFile, gson);
 				}
 				catch (IOException | RuntimeException e)
 				{
@@ -269,7 +275,7 @@ public class RetrospectPlugin extends Plugin
 		@Override
 		public void copyFolderPath(FightFolders.Folder folder)
 		{
-			final String path = RetrospectPlugin.copyPath(new File(Recorder.FOLDERS, folder.dir));
+			final String path = copyPath(recorder.folders().join(folder.dir));
 			clientThread.invokeLater(() -> say("Path copied: " + path));
 		}
 
@@ -315,7 +321,7 @@ public class RetrospectPlugin extends Plugin
 	 * Where a moment happening right now should be filed: the current fight's folder in
 	 * Serious mode (if that folder is switched on), otherwise null for the usual dated folders.
 	 */
-	private File momentDir()
+	private Filepath momentDir()
 	{
 		if (!serious())
 		{
@@ -338,7 +344,7 @@ public class RetrospectPlugin extends Plugin
 		{
 			f = fightFolder; // the drop that lands just after the kill belongs to that fight
 		}
-		return f != null && f.log ? new File(Recorder.FOLDERS, f.dir) : null;
+		return f != null && f.log ? recorder.folders().join(f.dir) : null;
 	}
 
 	private void readSettings()
@@ -708,14 +714,14 @@ public class RetrospectPlugin extends Plugin
 		}
 
 		// Serious mode: file this fight in its folder
-		File fileInto = null;
+		Filepath fileInto = null;
 		if (serious())
 		{
 			FightFolders.Folder f = folders.forFight(e.target, e.targetId, e.targetIsPlayer, true);
 			if (f != null && f.log)
 			{
 				folders.record(f, e);
-				fileInto = new File(Recorder.FOLDERS, f.dir);
+				fileInto = recorder.folders().join(f.dir);
 				fightFolder = f;
 				fightFolderTick = client.getTickCount();
 			}
@@ -724,7 +730,7 @@ public class RetrospectPlugin extends Plugin
 		}
 
 		final FightSummary summary = FightSummary.of(e, d.takeaway, d.clip);
-		final File dir = fileInto;
+		final Filepath dir = fileInto;
 		final String stamp = STAMP.format(Instant.ofEpochMilli(e.startedAtMs));
 		final String result = e.outcome == Encounter.Outcome.KILL ? "kill" : died ? "death" : "left";
 		executor.execute(() ->
@@ -734,9 +740,8 @@ public class RetrospectPlugin extends Plugin
 				history.add(summary);
 				if (dir != null)
 				{
-					dir.mkdirs();
-					File out = new File(dir, stamp + "_" + result + "_debrief.txt");
-					Files.write(out.toPath(), d.toText().getBytes(StandardCharsets.UTF_8));
+					dir.createDirectories();
+					dir.join(stamp + "_" + result + "_debrief.txt").write(d.toText());
 				}
 			}
 			catch (IOException | RuntimeException ex)
@@ -908,11 +913,11 @@ public class RetrospectPlugin extends Plugin
 
 	// ---------- talking to the player ----------
 
-	private void onSaved(File file, String kind)
+	private void onSaved(Filepath file, String kind)
 	{
 		if (config.chatSaves())
 		{
-			clientThread.invokeLater(() -> say("Saved " + kind + ": " + file.getName()));
+			clientThread.invokeLater(() -> say("Saved " + kind + ": " + file.getFileName()));
 		}
 	}
 
@@ -971,15 +976,15 @@ public class RetrospectPlugin extends Plugin
 	 * Puts a folder's path on the clipboard. Plugins are not allowed to open a file manager,
 	 * so the path is handed to the player to paste instead.
 	 */
-	private static String copyPath(File dir)
+	private static String copyPath(Filepath dir)
 	{
-		dir.mkdirs();
-		final String path = dir.getAbsolutePath();
+		final String path = dir.toString();
 		try
 		{
+			dir.createDirectories();
 			Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(path), null);
 		}
-		catch (RuntimeException e)
+		catch (IOException | RuntimeException e)
 		{
 			log.warn("Could not copy the folder path", e);
 		}

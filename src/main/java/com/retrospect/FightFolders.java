@@ -2,13 +2,12 @@ package com.retrospect;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import java.io.Reader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import net.runelite.client.util.Filepath;
 
 /**
  * One folder per thing you fight. In Serious mode a fight's debrief and clips are filed
@@ -64,11 +63,11 @@ final class FightFolders
 		}
 	}
 
-	private final File file;
+	private final Filepath file;
 	private final Gson gson;
 	private List<Folder> folders = new ArrayList<>();
 
-	FightFolders(File file, Gson gson)
+	FightFolders(Filepath file, Gson gson)
 	{
 		this.file = file;
 		this.gson = gson;
@@ -81,10 +80,13 @@ final class FightFolders
 		{
 			if (file.isFile())
 			{
-				List<Folder> read = gson.fromJson(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8),
-					new TypeToken<List<Folder>>()
+				List<Folder> read;
+				try (Reader r = file.openBufferedReader())
+				{
+					read = gson.fromJson(r, new TypeToken<List<Folder>>()
 					{
 					}.getType());
+				}
 				if (read != null)
 				{
 					for (Folder f : read)
@@ -105,8 +107,8 @@ final class FightFolders
 
 	synchronized void save() throws IOException
 	{
-		file.getParentFile().mkdirs();
-		Files.write(file.toPath(), gson.toJson(folders).getBytes(StandardCharsets.UTF_8));
+		file.getParent().createDirectories();
+		file.write(gson.toJson(folders));
 	}
 
 	synchronized List<Folder> all()

@@ -2,8 +2,8 @@ package com.retrospect;
 
 import java.awt.Image;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -18,8 +18,8 @@ import java.util.function.BiConsumer;
 import javax.imageio.ImageIO;
 import javax.inject.Inject;
 import javax.inject.Singleton;
-import net.runelite.client.RuneLite;
 import net.runelite.client.ui.DrawManager;
+import net.runelite.client.util.Filepath;
 import net.runelite.client.util.ImageUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,10 +36,14 @@ class Recorder
 {
 	private static final Logger log = LoggerFactory.getLogger(Recorder.class);
 
-	static final File ROOT = new File(RuneLite.RUNELITE_DIR, "retrospect");
-	static final File CLIPS = new File(ROOT, "clips");
-	static final File SHOTS = new File(ROOT, "screenshots");
-	static final File FOLDERS = new File(ROOT, "folders");
+	/**
+	 * Set once from the plugin's own data directory. Plugins are handed a Filepath they cannot
+	 * escape, so every write below is confined to it.
+	 */
+	private Filepath root;
+	private Filepath clips;
+	private Filepath shots;
+	private Filepath folders;
 	/** A run of back-to-back moments is saved as one clip, but never longer than this. */
 	private static final long MAX_CLIP_MS = 45_000;
 	private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -50,7 +54,7 @@ class Recorder
 		long startMs;
 		long endMs;
 		String base;
-		File dir;
+		Filepath dir;
 	}
 
 	private final DrawManager drawManager;
@@ -65,7 +69,7 @@ class Recorder
 	private volatile boolean active;
 	private Pending pending;
 	/** Told about every saved file: (file, what kind of thing it is). */
-	private volatile BiConsumer<File, String> onSaved = (f, k) -> { };
+	private volatile BiConsumer<Filepath, String> onSaved = (f, k) -> { };
 
 	@Inject
 	Recorder(DrawManager drawManager, RetrospectConfig config)
@@ -74,9 +78,28 @@ class Recorder
 		this.config = config;
 	}
 
-	void setOnSaved(BiConsumer<File, String> onSaved)
+	void setOnSaved(BiConsumer<Filepath, String> onSaved)
 	{
 		this.onSaved = onSaved;
+	}
+
+	/** Called once on start up with the directory RuneLite gives the plugin. */
+	synchronized void setRoot(Filepath root)
+	{
+		this.root = root;
+		this.clips = root.join("clips");
+		this.shots = root.join("screenshots");
+		this.folders = root.join("folders");
+	}
+
+	Filepath root()
+	{
+		return root;
+	}
+
+	Filepath folders()
+	{
+		return folders;
 	}
 
 	boolean isRecording()
@@ -234,9 +257,9 @@ class Recorder
 	 * @param folder file this moment here instead of the dated clips and screenshots folders
 	 *               (used in Serious mode to keep a boss's media together). Null for the usual place.
 	 */
-	String moment(String label, RetrospectConfig.Capture mode, File folder)
+	String moment(String label, RetrospectConfig.Capture mode, Filepath folder)
 	{
-		if (mode == null || mode == RetrospectConfig.Capture.OFF || timer == null)
+		if (mode == null || mode == RetrospectConfig.Capture.OFF || timer == null || root == null)
 		{
 			return null;
 		}
@@ -244,9 +267,9 @@ class Recorder
 		String safe = ClipWriter.safeName(label);
 		if (mode.screenshot())
 		{
-			final File file = folder != null
-				? new File(folder, when.format(DAY) + "_" + when.format(TIME) + "_" + safe + ".png")
-				: new File(new File(SHOTS, when.format(DAY)), when.format(TIME) + "_" + safe + ".png");
+			final Filepath file = folder != null
+				? folder.join(when.format(DAY) + "_" + when.format(TIME) + "_" + safe + ".png")
+				: shots.join(when.format(DAY), when.format(TIME) + "_" + safe + ".png");
 			drawManager.requestNextFrameListener(image -> screenshot(image, file));
 		}
 		if (!mode.clip() || !config.recordClips() || !active)
@@ -266,7 +289,7 @@ class Recorder
 			pending = new Pending();
 			pending.startMs = now - config.secondsBefore() * 1000L;
 			pending.endMs = now + after;
-			pending.dir = folder != null ? folder : new File(CLIPS, when.format(DAY));
+			pending.dir = folder != null ? folder : clips.join(when.format(DAY));
 			pending.base = (folder != null ? when.format(DAY) + "_" : "") + when.format(TIME) + "_" + safe;
 			timer.schedule(this::finishPending, after + 400, TimeUnit.MILLISECONDS);
 			return pending.base;
@@ -318,10 +341,10 @@ class Recorder
 		}
 		try
 		{
-			p.dir.mkdirs();
-			File clip = new File(p.dir, p.base + ".avi");
+			p.dir.createDirectories();
+			Filepath clip = p.dir.join(p.base + ".avi");
 			ClipWriter.writeAvi(frames, fps, clip);
-			ClipWriter.enforceCap(CLIPS.toPath(), capBytes, clip);
+			ClipWriter.enforceCap(clips, capBytes, clip);
 			onSaved.accept(clip, "clip");
 		}
 		catch (IOException | RuntimeException e)
@@ -330,7 +353,7 @@ class Recorder
 		}
 	}
 
-	private void screenshot(Image image, File file)
+	private void screenshot(Image image, Filepath file)
 	{
 		final BufferedImage copy = ImageUtil.bufferedImageFromImage(image);
 		ExecutorService w = writer;
@@ -344,8 +367,11 @@ class Recorder
 			{
 				try
 				{
-					file.getParentFile().mkdirs();
-					ImageIO.write(copy, "png", file);
+					file.getParent().createDirectories();
+					try (OutputStream os = file.openOutputStream())
+					{
+						ImageIO.write(copy, "png", os);
+					}
 					onSaved.accept(file, "screenshot");
 				}
 				catch (IOException | RuntimeException e)

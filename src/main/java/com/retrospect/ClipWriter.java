@@ -1,16 +1,17 @@
 package com.retrospect;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import net.runelite.client.util.Filepath;
 
 /** Turns buffered frames into a video file. */
 final class ClipWriter
@@ -70,7 +71,7 @@ final class ClipWriter
 	 * AVI (Motion JPEG). Needs nothing installed and saves instantly because the frames
 	 * are stored as they are. Plays in VLC and most desktop players.
 	 */
-	static void writeAvi(List<FrameBuffer.Frame> frames, int fps, File file) throws IOException
+	static void writeAvi(List<FrameBuffer.Frame> frames, int fps, Filepath file) throws IOException
 	{
 		List<FrameBuffer.Frame> seq = sameSize(resample(frames, fps));
 		if (seq.isEmpty())
@@ -85,178 +86,287 @@ final class ClipWriter
 		{
 			maxFrame = Math.max(maxFrame, f.jpeg.length);
 		}
-		try (RandomAccessFile out = new RandomAccessFile(file, "rw"))
+		try (Out out = new Out(file.openFileChannel(
+			StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)))
 		{
-			out.setLength(0);
-			tag(out, "RIFF");
-			long riffSize = out.getFilePointer();
-			le32(out, 0);
-			tag(out, "AVI ");
+			out.tag("RIFF");
+			long riffSize = out.pos();
+			out.le32(0);
+			out.tag("AVI ");
 
-			tag(out, "LIST");
-			long hdrlSize = out.getFilePointer();
-			le32(out, 0);
-			tag(out, "hdrl");
+			out.tag("LIST");
+			long hdrlSize = out.pos();
+			out.le32(0);
+			out.tag("hdrl");
 
-			tag(out, "avih");
-			le32(out, 56);
-			le32(out, 1_000_000 / fps); // microseconds per frame
-			le32(out, maxFrame * fps);  // peak bytes per second
-			le32(out, 0);
-			le32(out, 0x10);            // file has an index
-			le32(out, n);
-			le32(out, 0);
-			le32(out, 1);               // one stream
-			le32(out, maxFrame);
-			le32(out, w);
-			le32(out, h);
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 0);
+			out.tag("avih");
+			out.le32(56);
+			out.le32(1_000_000 / fps); // microseconds per frame
+			out.le32(maxFrame * fps);  // peak bytes per second
+			out.le32(0);
+			out.le32(0x10);            // file has an index
+			out.le32(n);
+			out.le32(0);
+			out.le32(1);               // one stream
+			out.le32(maxFrame);
+			out.le32(w);
+			out.le32(h);
+			out.le32(0);
+			out.le32(0);
+			out.le32(0);
+			out.le32(0);
 
-			tag(out, "LIST");
-			long strlSize = out.getFilePointer();
-			le32(out, 0);
-			tag(out, "strl");
+			out.tag("LIST");
+			long strlSize = out.pos();
+			out.le32(0);
+			out.tag("strl");
 
-			tag(out, "strh");
-			le32(out, 56);
-			tag(out, "vids");
-			tag(out, "MJPG");
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 1);   // scale
-			le32(out, fps); // rate
-			le32(out, 0);
-			le32(out, n);
-			le32(out, maxFrame);
-			le32(out, -1);
-			le32(out, 0);
-			le16(out, 0);
-			le16(out, 0);
-			le16(out, w);
-			le16(out, h);
+			out.tag("strh");
+			out.le32(56);
+			out.tag("vids");
+			out.tag("MJPG");
+			out.le32(0);
+			out.le32(0);
+			out.le32(0);
+			out.le32(1);   // scale
+			out.le32(fps); // rate
+			out.le32(0);
+			out.le32(n);
+			out.le32(maxFrame);
+			out.le32(-1);
+			out.le32(0);
+			out.le16(0);
+			out.le16(0);
+			out.le16(w);
+			out.le16(h);
 
-			tag(out, "strf");
-			le32(out, 40);
-			le32(out, 40);
-			le32(out, w);
-			le32(out, h);
-			le16(out, 1);
-			le16(out, 24);
-			tag(out, "MJPG");
-			le32(out, w * h * 3);
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 0);
-			le32(out, 0);
+			out.tag("strf");
+			out.le32(40);
+			out.le32(40);
+			out.le32(w);
+			out.le32(h);
+			out.le16(1);
+			out.le16(24);
+			out.tag("MJPG");
+			out.le32(w * h * 3);
+			out.le32(0);
+			out.le32(0);
+			out.le32(0);
+			out.le32(0);
 
-			patch(out, strlSize);
-			patch(out, hdrlSize);
+			out.patch(strlSize);
+			out.patch(hdrlSize);
 
-			tag(out, "LIST");
-			long moviSize = out.getFilePointer();
-			le32(out, 0);
-			long moviStart = out.getFilePointer();
-			tag(out, "movi");
+			out.tag("LIST");
+			long moviSize = out.pos();
+			out.le32(0);
+			long moviStart = out.pos();
+			out.tag("movi");
 			int[] offsets = new int[n];
 			int[] sizes = new int[n];
 			for (int i = 0; i < n; i++)
 			{
 				byte[] jpeg = seq.get(i).jpeg;
-				offsets[i] = (int) (out.getFilePointer() - moviStart);
+				offsets[i] = (int) (out.pos() - moviStart);
 				sizes[i] = jpeg.length;
-				tag(out, "00dc");
-				le32(out, jpeg.length);
-				out.write(jpeg);
+				out.tag("00dc");
+				out.le32(jpeg.length);
+				out.bytes(jpeg);
 				if ((jpeg.length & 1) == 1)
 				{
-					out.write(0);
+					out.u8(0);
 				}
 			}
-			patch(out, moviSize);
+			out.patch(moviSize);
 
-			tag(out, "idx1");
-			le32(out, n * 16);
+			out.tag("idx1");
+			out.le32(n * 16);
 			for (int i = 0; i < n; i++)
 			{
-				tag(out, "00dc");
-				le32(out, 0x10); // every frame is a key frame
-				le32(out, offsets[i]);
-				le32(out, sizes[i]);
+				out.tag("00dc");
+				out.le32(0x10); // every frame is a key frame
+				out.le32(offsets[i]);
+				out.le32(sizes[i]);
 			}
-			patch(out, riffSize);
+			out.patch(riffSize);
 		}
 	}
 
-	private static void patch(RandomAccessFile out, long sizeField) throws IOException
+	/**
+	 * A little buffered writer over the channel Filepath hands us. Plugins are not allowed to
+	 * reach for java.io, so this replaces what RandomAccessFile used to do: append little-endian
+	 * values, and go back afterwards to fill in a chunk size once its length is known.
+	 */
+	private static final class Out implements AutoCloseable
 	{
-		long end = out.getFilePointer();
-		out.seek(sizeField);
-		le32(out, (int) (end - sizeField - 4));
-		out.seek(end);
-	}
+		private final FileChannel ch;
+		private final ByteBuffer buf = ByteBuffer.allocate(1 << 16).order(ByteOrder.LITTLE_ENDIAN);
+		private long flushed;
 
-	private static void tag(RandomAccessFile out, String fourcc) throws IOException
-	{
-		out.write(fourcc.getBytes(StandardCharsets.US_ASCII));
-	}
+		Out(FileChannel ch)
+		{
+			this.ch = ch;
+		}
 
-	private static void le32(RandomAccessFile out, int v) throws IOException
-	{
-		out.write(v & 0xff);
-		out.write((v >>> 8) & 0xff);
-		out.write((v >>> 16) & 0xff);
-		out.write((v >>> 24) & 0xff);
-	}
+		/** Where the next byte will land, counting what is still sitting in the buffer. */
+		long pos()
+		{
+			return flushed + buf.position();
+		}
 
-	private static void le16(RandomAccessFile out, int v) throws IOException
-	{
-		out.write(v & 0xff);
-		out.write((v >>> 8) & 0xff);
+		private void room(int bytes) throws IOException
+		{
+			if (buf.remaining() < bytes)
+			{
+				flush();
+			}
+		}
+
+		private void flush() throws IOException
+		{
+			buf.flip();
+			while (buf.hasRemaining())
+			{
+				flushed += ch.write(buf);
+			}
+			buf.clear();
+		}
+
+		void tag(String fourcc) throws IOException
+		{
+			bytes(fourcc.getBytes(StandardCharsets.US_ASCII));
+		}
+
+		void le32(int v) throws IOException
+		{
+			room(4);
+			buf.putInt(v);
+		}
+
+		void le16(int v) throws IOException
+		{
+			room(2);
+			buf.putShort((short) v);
+		}
+
+		void u8(int v) throws IOException
+		{
+			room(1);
+			buf.put((byte) v);
+		}
+
+		void bytes(byte[] b) throws IOException
+		{
+			if (b.length > buf.capacity())
+			{
+				flush();
+				ByteBuffer direct = ByteBuffer.wrap(b);
+				while (direct.hasRemaining())
+				{
+					flushed += ch.write(direct);
+				}
+				return;
+			}
+			room(b.length);
+			buf.put(b);
+		}
+
+		/** Fills in the 4-byte size field at sizeField with the length of the chunk it opens. */
+		void patch(long sizeField) throws IOException
+		{
+			long end = pos();
+			flush();
+			ByteBuffer size = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+			size.putInt((int) (end - sizeField - 4));
+			size.flip();
+			long at = sizeField;
+			while (size.hasRemaining())
+			{
+				at += ch.write(size, at);
+			}
+		}
+
+		@Override
+		public void close() throws IOException
+		{
+			try
+			{
+				flush();
+			}
+			finally
+			{
+				ch.close();
+			}
+		}
 	}
 
 	/**
 	 * Keeps the clips folder under the storage limit by removing the oldest clips first.
 	 * Only ever touches .avi and .mp4 files inside the Retrospect clips folder, and never the newest clip.
 	 */
-	static void enforceCap(Path clipsDir, long capBytes, File keep) throws IOException
+	static void enforceCap(Filepath clipsDir, long capBytes, Filepath keep) throws IOException
 	{
-		if (!Files.isDirectory(clipsDir))
+		if (!clipsDir.isDirectory())
 		{
 			return;
 		}
-		List<File> clips;
-		try (Stream<Path> walk = Files.walk(clipsDir, 2))
+		List<Filepath> found;
+		try (Stream<Filepath> walk = clipsDir.walk(2))
 		{
-			clips = walk.map(Path::toFile)
-				.filter(File::isFile)
-				.filter(f -> f.getName().endsWith(".avi") || f.getName().endsWith(".mp4"))
-				.sorted(Comparator.comparingLong(File::lastModified))
+			found = walk.filter(Filepath::isFile)
+				.filter(f -> f.getFileName().endsWith(".avi") || f.getFileName().endsWith(".mp4"))
 				.collect(Collectors.toCollection(ArrayList::new));
 		}
+		// Size and timestamp both throw, so they are read in a plain loop rather than a comparator.
+		List<Clip> clips = new ArrayList<>(found.size());
 		long total = 0;
-		for (File f : clips)
+		for (Filepath f : found)
 		{
-			total += f.length();
+			try
+			{
+				Clip c = new Clip(f, f.size(), f.getLastModifiedTime().toMillis());
+				clips.add(c);
+				total += c.bytes;
+			}
+			catch (IOException e)
+			{
+				// Vanished or unreadable: leave it out of the accounting rather than fail the save.
+			}
 		}
-		for (File f : clips)
+		clips.sort(Comparator.comparingLong(c -> c.modified));
+		for (Clip c : clips)
 		{
 			if (total <= capBytes)
 			{
 				break;
 			}
-			if (keep != null && f.equals(keep))
+			if (keep != null && c.path.equals(keep))
 			{
 				continue;
 			}
-			long size = f.length();
-			if (f.delete())
+			try
 			{
-				total -= size;
+				c.path.delete();
+				total -= c.bytes;
 			}
+			catch (IOException e)
+			{
+				// In use or already gone: skip it and try the next oldest.
+			}
+		}
+	}
+
+	private static final class Clip
+	{
+		private final Filepath path;
+		private final long bytes;
+		private final long modified;
+
+		Clip(Filepath path, long bytes, long modified)
+		{
+			this.path = path;
+			this.bytes = bytes;
+			this.modified = modified;
 		}
 	}
 
