@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
+import net.runelite.client.util.Filepath;
 import org.junit.Test;
 
 public class RetrospectLogicTest
@@ -238,8 +239,8 @@ public class RetrospectLogicTest
 	@Test
 	public void historySurvivesARestartAndABrokenFile() throws Exception
 	{
-		File dir = Files.createTempDirectory("retrospect").toFile();
-		File file = new File(dir, "history.json");
+		Filepath dir = Filepath.testRoot(Files.createTempDirectory("retrospect"));
+		Filepath file = dir.join("history.json");
 		FightHistory h = new FightHistory(file, new Gson());
 		h.load();
 		FightSummary s = new FightSummary();
@@ -252,11 +253,11 @@ public class RetrospectLogicTest
 		assertEquals(1, again.against("vorkath").size());
 		assertEquals(200, again.recent(5).get(0).durationTicks);
 
-		Files.write(file.toPath(), "{not json".getBytes());
+		file.write("{not json");
 		FightHistory broken = new FightHistory(file, new Gson());
 		broken.load();
 		assertEquals(0, broken.recent(5).size());
-		assertTrue(new File(dir, "history.json.unreadable").isFile());
+		assertTrue(dir.join("history.json.unreadable").isFile());
 	}
 
 	private static BufferedImage picture(int w, int h, Color c)
@@ -309,9 +310,9 @@ public class RetrospectLogicTest
 		{
 			b.add(picture(640, 360, new Color(i * 8, 40, 200 - i * 4)), i * 100L, 360, 0.7f);
 		}
-		File f = File.createTempFile("retrospect", ".avi");
+		Filepath f = Filepath.testRoot(Files.createTempDirectory("retrospect-avi")).join("clip.avi");
 		ClipWriter.writeAvi(b.snapshot(0, Long.MAX_VALUE), 10, f);
-		byte[] bytes = Files.readAllBytes(f.toPath());
+		byte[] bytes = Files.readAllBytes(java.nio.file.Paths.get(f.toString()));
 		assertEquals("RIFF", new String(bytes, 0, 4));
 		assertEquals("AVI ", new String(bytes, 8, 4));
 		int riff = (bytes[4] & 0xff) | (bytes[5] & 0xff) << 8 | (bytes[6] & 0xff) << 16 | (bytes[7] & 0xff) << 24;
@@ -323,26 +324,26 @@ public class RetrospectLogicTest
 	@Test
 	public void storageCapDeletesOldestClipsOnlyAndNeverTheNewest() throws Exception
 	{
-		File root = Files.createTempDirectory("retrospect-clips").toFile();
-		File day = new File(root, "2026-11-15");
-		day.mkdirs();
-		File[] clips = new File[4];
+		Filepath root = Filepath.testRoot(Files.createTempDirectory("retrospect-clips"));
+		Filepath day = root.join("2026-11-15");
+		day.createDirectories();
+		Filepath[] clips = new Filepath[4];
 		for (int i = 0; i < 4; i++)
 		{
-			clips[i] = new File(day, "clip" + i + (i % 2 == 0 ? ".mp4" : ".avi"));
-			Files.write(clips[i].toPath(), new byte[1000]);
-			clips[i].setLastModified(1_000_000_000_000L + i * 60_000L);
+			clips[i] = day.join("clip" + i + (i % 2 == 0 ? ".mp4" : ".avi"));
+			clips[i].write(new byte[1000]);
+			new File(clips[i].toString()).setLastModified(1_000_000_000_000L + i * 60_000L);
 		}
-		File notes = new File(day, "notes.txt");
-		Files.write(notes.toPath(), new byte[5000]);
-		ClipWriter.enforceCap(root.toPath(), 2500, clips[3]);
+		Filepath notes = day.join("notes.txt");
+		notes.write(new byte[5000]);
+		ClipWriter.enforceCap(root, 2500, clips[3]);
 		assertFalse(clips[0].exists());
 		assertFalse(clips[1].exists());
 		assertTrue(clips[2].exists());
 		assertTrue(clips[3].exists());
 		assertTrue(notes.exists()); // not a clip: never touched
 
-		ClipWriter.enforceCap(root.toPath(), 0, clips[3]);
+		ClipWriter.enforceCap(root, 0, clips[3]);
 		assertFalse(clips[2].exists());
 		assertTrue(clips[3].exists()); // the clip just saved survives even a zero limit
 	}
@@ -668,7 +669,7 @@ public class RetrospectLogicTest
 	@Test
 	public void panelLookKeepsEditsAndRevertsToStock() throws Exception
 	{
-		File file = new File(Files.createTempDirectory("retrospect-look").toFile(), "look.json");
+		Filepath file = Filepath.testRoot(Files.createTempDirectory("retrospect-look")).join("look.json");
 		PanelLook look = PanelLook.load(file, new Gson());
 		assertTrue(look.isStock());
 		assertEquals("THE TAKEAWAY", look.label("takeaway"));
@@ -689,14 +690,14 @@ public class RetrospectLogicTest
 		assertTrue(again.isStock());
 		assertEquals(new Color(0xF0B93A), again.color("accent"));
 
-		Files.write(file.toPath(), "garbage".getBytes());
+		file.write("garbage");
 		assertTrue(PanelLook.load(file, new Gson()).isStock());
 	}
 
 	@Test
 	public void foldersAreMadePerMonsterSharedForPvpAndCustomOnesWin() throws Exception
 	{
-		File file = new File(Files.createTempDirectory("retrospect-folders").toFile(), "folders.json");
+		Filepath file = Filepath.testRoot(Files.createTempDirectory("retrospect-folders")).join("folders.json");
 		FightFolders folders = new FightFolders(file, new Gson());
 		folders.load();
 		assertNull(folders.forFight("Vorkath", 8061, false, false));
@@ -787,5 +788,169 @@ public class RetrospectLogicTest
 		assertTrue(b.size() < 40 && b.size() > 0);
 		List<FrameBuffer.Frame> kept = b.snapshot(0, Long.MAX_VALUE);
 		assertEquals(3_900, kept.get(kept.size() - 1).timeMs); // the newest frames are the ones kept
+	}
+
+	/**
+	 * The AVI writer used to seek with RandomAccessFile. Plugin Hub rules now require
+	 * Filepath, so it writes through a FileChannel instead. The bytes must not have moved:
+	 * this builds the same clip with the original algorithm and compares them exactly.
+	 */
+	@Test
+	public void theFilepathAviWriterIsByteIdenticalToTheOldRandomAccessFileOne() throws Exception
+	{
+		FrameBuffer b = new FrameBuffer();
+		for (int i = 0; i < 25; i++)
+		{
+			b.add(picture(400, 225, new Color(i * 9, 70, 180 - i * 5)), i * 100L, 225, 0.7f);
+		}
+		List<FrameBuffer.Frame> frames = b.snapshot(0, Long.MAX_VALUE);
+
+		Filepath now = Filepath.testRoot(Files.createTempDirectory("retrospect-new")).join("clip.avi");
+		ClipWriter.writeAvi(frames, 10, now);
+		byte[] viaFilepath = Files.readAllBytes(java.nio.file.Paths.get(now.toString()));
+
+		File old = File.createTempFile("retrospect-old", ".avi");
+		legacyWriteAvi(ClipWriter.resample(frames, 10), 10, old);
+		byte[] viaRandomAccess = Files.readAllBytes(old.toPath());
+
+		assertEquals(viaRandomAccess.length, viaFilepath.length);
+		assertTrue(java.util.Arrays.equals(viaRandomAccess, viaFilepath));
+		assertTrue(viaFilepath.length > 10_000); // and it actually wrote a clip, not an empty shell
+	}
+
+	/** The original writer, kept here only so the port above can be checked against it. */
+	private static void legacyWriteAvi(List<FrameBuffer.Frame> seq, int fps, File file) throws Exception
+	{
+		int w = seq.get(0).width;
+		int h = seq.get(0).height;
+		int n = seq.size();
+		int maxFrame = 0;
+		for (FrameBuffer.Frame f : seq)
+		{
+			maxFrame = Math.max(maxFrame, f.jpeg.length);
+		}
+		try (java.io.RandomAccessFile out = new java.io.RandomAccessFile(file, "rw"))
+		{
+			out.setLength(0);
+			lTag(out, "RIFF");
+			long riffSize = out.getFilePointer();
+			l32(out, 0);
+			lTag(out, "AVI ");
+			lTag(out, "LIST");
+			long hdrlSize = out.getFilePointer();
+			l32(out, 0);
+			lTag(out, "hdrl");
+			lTag(out, "avih");
+			l32(out, 56);
+			l32(out, 1_000_000 / fps);
+			l32(out, maxFrame * fps);
+			l32(out, 0);
+			l32(out, 0x10);
+			l32(out, n);
+			l32(out, 0);
+			l32(out, 1);
+			l32(out, maxFrame);
+			l32(out, w);
+			l32(out, h);
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 0);
+			lTag(out, "LIST");
+			long strlSize = out.getFilePointer();
+			l32(out, 0);
+			lTag(out, "strl");
+			lTag(out, "strh");
+			l32(out, 56);
+			lTag(out, "vids");
+			lTag(out, "MJPG");
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 1);
+			l32(out, fps);
+			l32(out, 0);
+			l32(out, n);
+			l32(out, maxFrame);
+			l32(out, -1);
+			l32(out, 0);
+			l16(out, 0);
+			l16(out, 0);
+			l16(out, w);
+			l16(out, h);
+			lTag(out, "strf");
+			l32(out, 40);
+			l32(out, 40);
+			l32(out, w);
+			l32(out, h);
+			l16(out, 1);
+			l16(out, 24);
+			lTag(out, "MJPG");
+			l32(out, w * h * 3);
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 0);
+			l32(out, 0);
+			lPatch(out, strlSize);
+			lPatch(out, hdrlSize);
+			lTag(out, "LIST");
+			long moviSize = out.getFilePointer();
+			l32(out, 0);
+			long moviStart = out.getFilePointer();
+			lTag(out, "movi");
+			int[] offsets = new int[n];
+			int[] sizes = new int[n];
+			for (int i = 0; i < n; i++)
+			{
+				byte[] jpeg = seq.get(i).jpeg;
+				offsets[i] = (int) (out.getFilePointer() - moviStart);
+				sizes[i] = jpeg.length;
+				lTag(out, "00dc");
+				l32(out, jpeg.length);
+				out.write(jpeg);
+				if ((jpeg.length & 1) == 1)
+				{
+					out.write(0);
+				}
+			}
+			lPatch(out, moviSize);
+			lTag(out, "idx1");
+			l32(out, n * 16);
+			for (int i = 0; i < n; i++)
+			{
+				lTag(out, "00dc");
+				l32(out, 0x10);
+				l32(out, offsets[i]);
+				l32(out, sizes[i]);
+			}
+			lPatch(out, riffSize);
+		}
+	}
+
+	private static void lPatch(java.io.RandomAccessFile out, long sizeField) throws Exception
+	{
+		long end = out.getFilePointer();
+		out.seek(sizeField);
+		l32(out, (int) (end - sizeField - 4));
+		out.seek(end);
+	}
+
+	private static void lTag(java.io.RandomAccessFile out, String fourcc) throws Exception
+	{
+		out.write(fourcc.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+	}
+
+	private static void l32(java.io.RandomAccessFile out, int v) throws Exception
+	{
+		out.write(v & 0xff);
+		out.write((v >>> 8) & 0xff);
+		out.write((v >>> 16) & 0xff);
+		out.write((v >>> 24) & 0xff);
+	}
+
+	private static void l16(java.io.RandomAccessFile out, int v) throws Exception
+	{
+		out.write(v & 0xff);
+		out.write((v >>> 8) & 0xff);
 	}
 }
